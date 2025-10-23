@@ -8,8 +8,8 @@ def fetch_resource_arns():
     try:
         client = boto3.client('resource-explorer-2')
         
-        default_view_arn = "arn:aws:resource-explorer-2"
-        query_filter = '-tag.key:ENV'
+        default_view_arn = "arn:aws:resource-explorer-2:ap-northeast-1:372296823591:view/all-resources/c02204f1-2b77-4363-a3fa-84b208cee97e"
+        query_filter = '-tag.key:vendor'
         
         resource_arns = []
         paginator = client.get_paginator('search')
