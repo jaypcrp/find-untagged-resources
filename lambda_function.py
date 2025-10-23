@@ -90,7 +90,7 @@ def lambda_handler(event, context):
             csv_report = generate_csv_report(all_untagged_resources)
             
             # Define the S3 bucket and file name
-            bucket_name = "S3-BUCKET-NAME"
+            bucket_name = "vb-auto-tag-check-and-compliance-report-bucket"
             current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
             file_name = f"untagged-resources-report-{current_time}.csv"
             
