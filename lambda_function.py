@@ -6,7 +6,6 @@ from openpyxl import Workbook
 # Function to fetch ARNs of resources that are missing a specific tag key
 def fetch_resource_arns():
     try:
-        # Only target these two regions
         regions = ["ap-northeast-1", "ap-south-1"]
         query_filter = '-tag.key:vendor'
         resource_arns = []
@@ -16,17 +15,26 @@ def fetch_resource_arns():
             client = boto3.client('resource-explorer-2', region_name=region)
 
             try:
-                # Get the available views in this region
+                # Get the available views
                 view_response = client.list_views()
-                if not view_response.get('Views'):
+                views = view_response.get('Views', [])
+                if not views:
                     print(f"⚠️ No views found in region: {region}")
                     continue
 
-                # Use the first (or default) view ARN
-                view_arn = view_response['Views'][0]['ViewArn']
+                # Handle both dict and string cases
+                first_view = views[0]
+                if isinstance(first_view, dict):
+                    view_arn = first_view.get('ViewArn')
+                elif isinstance(first_view, str):
+                    view_arn = first_view  # sometimes returns ARN string directly
+                else:
+                    print(f"⚠️ Unexpected view format in {region}: {type(first_view)}")
+                    continue
+
                 print(f"Using ViewArn for {region}: {view_arn}")
 
-                # Paginate through search results (max 1000 per region)
+                # Paginate search results
                 paginator = client.get_paginator('search')
                 response_pages = paginator.paginate(
                     QueryString=query_filter,
@@ -35,14 +43,17 @@ def fetch_resource_arns():
 
                 for response in response_pages:
                     for resource in response.get('Resources', []):
-                        resource_arns.append(resource['Arn'])
+                        arn = resource.get('Arn')
+                        if arn:
+                            resource_arns.append(arn)
 
             except Exception as e:
                 print(f"❌ Error while fetching from region {region}: {e}")
-        # Deduplicate ARNs
+
         unique_arns = list(set(resource_arns))
         print(f"✅ Total untagged resources found: {len(unique_arns)}")
         return unique_arns
+
     except Exception as error:
         print(f"Failed to retrieve resource ARNs: {error}")
         return []
