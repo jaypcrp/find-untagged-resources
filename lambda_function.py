@@ -36,9 +36,16 @@ def fetch_resources_from_regions():
                 for resource in response.get("Resources", []):
                     arn = resource.get("Arn")
                     tags = resource.get("Properties", [])
+
+                    # 🟩 NEW: Extract Service and ResourceType fields
+                    service = resource.get("Service", "N/A")           # 🟩
+                    resource_type = resource.get("ResourceType", "N/A") # 🟩
+
                     all_resources.append({
                         "Arn": arn,
                         "Region": region,
+                        "Service": service,             # 🟩
+                        "ResourceType": resource_type,  # 🟩
                         "Tags": tags
                     })
 
@@ -71,11 +78,15 @@ def categorize_by_region_with_tags(resources):
         region = res.get("Region", "unknown")
         arn = res.get("Arn")
         tag_status = evaluate_tag_status(res)
+        service = res.get("Service", "N/A")            # 🟩
+        resource_type = res.get("ResourceType", "N/A") # 🟩
 
         if region not in categorized:
             categorized[region] = []
         categorized[region].append({
             "Arn": arn,
+            "Service": service,             # 🟩
+            "ResourceType": resource_type,  # 🟩
             **tag_status
         })
     return categorized
@@ -89,11 +100,14 @@ def generate_excel_report(grouped_resources):
 
     for region, resources in grouped_resources.items():
         worksheet = workbook.create_sheet(title=region)
-        headers = ["Resource ARN"] + REQUIRED_TAGS
+
+        # 🟩 Updated headers to include Service and ResourceType
+        headers = ["Resource ARN", "Service", "Resource Type"] + REQUIRED_TAGS  # 🟩
         worksheet.append(headers)
 
         for res in resources:
-            row = [res["Arn"]] + [res[tag] for tag in REQUIRED_TAGS]
+            # 🟩 Updated row to include Service and ResourceType
+            row = [res["Arn"], res["Service"], res["ResourceType"]] + [res[tag] for tag in REQUIRED_TAGS]  # 🟩
             worksheet.append(row)
 
         # Adjust column width
