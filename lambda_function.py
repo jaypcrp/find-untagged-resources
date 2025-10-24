@@ -3,99 +3,107 @@ import io
 import datetime
 from openpyxl import Workbook
 
-# Function to fetch ARNs of resources that are missing a specific tag key
-def fetch_resource_arns():
+# List of required tags
+REQUIRED_TAGS = ["DeletionDate", "vendor", "owner", "purpose"]
+
+# Function to fetch all resources from the selected regions
+def fetch_resources_from_regions():
     try:
         regions = ["ap-northeast-1", "ap-south-1"]
-        query_filter = '-tag.key:vendor'
-        resource_arns = []
+        query_filter = "tagKeys"
+        all_resources = []
 
         for region in regions:
             print(f"🔍 Searching resources in region: {region}")
             client = boto3.client('resource-explorer-2', region_name=region)
 
-            try:
-                # Get the available views
-                view_response = client.list_views()
-                views = view_response.get('Views', [])
-                if not views:
-                    print(f"⚠️ No views found in region: {region}")
-                    continue
+            # Get available views
+            view_response = client.list_views()
+            views = view_response.get('Views', [])
+            if not views:
+                print(f"⚠️ No views found in region: {region}")
+                continue
 
-                # Handle both dict and string cases
-                first_view = views[0]
-                if isinstance(first_view, dict):
-                    view_arn = first_view.get('ViewArn')
-                elif isinstance(first_view, str):
-                    view_arn = first_view  # sometimes returns ARN string directly
-                else:
-                    print(f"⚠️ Unexpected view format in {region}: {type(first_view)}")
-                    continue
+            # Handle both dict and string cases
+            first_view = views[0]
+            view_arn = first_view.get('ViewArn') if isinstance(first_view, dict) else first_view
+            print(f"Using ViewArn for {region}: {view_arn}")
 
-                print(f"Using ViewArn for {region}: {view_arn}")
+            paginator = client.get_paginator('search')
+            response_pages = paginator.paginate(QueryString=query_filter, ViewArn=view_arn)
 
-                # Paginate search results
-                paginator = client.get_paginator('search')
-                response_pages = paginator.paginate(
-                    QueryString=query_filter,
-                    ViewArn=view_arn
-                )
+            for response in response_pages:
+                for resource in response.get("Resources", []):
+                    arn = resource.get("Arn")
+                    tags = resource.get("Properties", [])
+                    all_resources.append({
+                        "Arn": arn,
+                        "Region": region,
+                        "Tags": tags
+                    })
 
-                for response in response_pages:
-                    for resource in response.get('Resources', []):
-                        arn = resource.get('Arn')
-                        if arn:
-                            resource_arns.append(arn)
-
-            except Exception as e:
-                print(f"❌ Error while fetching from region {region}: {e}")
-
-        unique_arns = list(set(resource_arns))
-        print(f"✅ Total untagged resources found: {len(unique_arns)}")
-        return unique_arns
+        print(f"✅ Total resources fetched: {len(all_resources)}")
+        return all_resources
 
     except Exception as error:
-        print(f"Failed to retrieve resource ARNs: {error}")
+        print(f"❌ Error fetching resources: {error}")
         return []
 
-# Function to categorize resources by their region
-def categorize_resources_by_region(resource_arns):
-    try:
-        regional_resources = {}
-        for arn in resource_arns:
-            if ':' in arn:
-                region = arn.split(':')[3]
-                if region not in regional_resources:
-                    regional_resources[region] = []
-                regional_resources[region].append(arn)
-        return regional_resources
-    except Exception as error:
-        print(f"Error while grouping resources by region: {error}")
-        return {}
+
+# Function to determine tag status for each required tag
+def evaluate_tag_status(resource):
+    tag_status = {}
+    tag_keys = {t["Data"]["Key"]: t["Data"]["Value"] for t in resource.get("Tags", []) if "Data" in t and "Key" in t["Data"]}
+    
+    for tag in REQUIRED_TAGS:
+        if tag in tag_keys and tag_keys[tag]:
+            tag_status[tag] = "Present"
+        else:
+            tag_status[tag] = "Missing"
+
+    return tag_status
 
 
-# Function to generate Excel report with multiple region tabs
+# Function to categorize resources by region with tag status
+def categorize_by_region_with_tags(resources):
+    categorized = {}
+    for res in resources:
+        region = res.get("Region", "unknown")
+        arn = res.get("Arn")
+        tag_status = evaluate_tag_status(res)
+
+        if region not in categorized:
+            categorized[region] = []
+        categorized[region].append({
+            "Arn": arn,
+            **tag_status
+        })
+    return categorized
+
+
+# Function to generate Excel with multiple sheets (1 per region)
 def generate_excel_report(grouped_resources):
     workbook = Workbook()
     default_sheet = workbook.active
-    workbook.remove(default_sheet)  # remove default blank sheet
+    workbook.remove(default_sheet)
 
-    for region, arns in grouped_resources.items():
+    for region, resources in grouped_resources.items():
         worksheet = workbook.create_sheet(title=region)
-        worksheet.append(["Resource ARN", "Status"])
-        for arn in arns:
-            worksheet.append([arn, "Untagged"])
+        headers = ["Resource ARN"] + REQUIRED_TAGS
+        worksheet.append(headers)
 
-        # Auto-adjust column widths for neatness
+        for res in resources:
+            row = [res["Arn"]] + [res[tag] for tag in REQUIRED_TAGS]
+            worksheet.append(row)
+
+        # Adjust column width
         for column_cells in worksheet.columns:
             length = max(len(str(cell.value)) for cell in column_cells)
             worksheet.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 80)
 
-    # Save workbook to an in-memory buffer
     excel_buffer = io.BytesIO()
     workbook.save(excel_buffer)
     excel_buffer.seek(0)
-
     return excel_buffer
 
 
@@ -109,38 +117,30 @@ def upload_excel_to_s3(excel_buffer, bucket_name, file_name):
             Body=excel_buffer.getvalue(),
             ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
-        print(f"Report uploaded to S3: {file_name}")
+        print(f"✅ Report uploaded to S3: {file_name}")
     except Exception as error:
-        print(f"Failed to upload report to S3: {error}")
+        print(f"❌ Failed to upload report: {error}")
 
 
-# Main function for AWS Lambda
+# Lambda handler
 def lambda_handler(event, context):
     try:
-        print("Execution started...")
+        print("🚀 Execution started...")
 
-        # Fetch untagged resources
-        resources = fetch_resource_arns()
-        if resources:
-            print(f"Total untagged resources found: {len(resources)}")
-            print("Grouping resources by region...")
+        resources = fetch_resources_from_regions()
+        if not resources:
+            print("No resources found.")
+            return
 
-            # Group by region
-            grouped_resources = categorize_resources_by_region(resources)
+        categorized = categorize_by_region_with_tags(resources)
+        excel_report = generate_excel_report(categorized)
 
-            # Generate Excel report with multiple sheets
-            excel_report = generate_excel_report(grouped_resources)
+        bucket_name = "vb-auto-tag-check-and-compliance-report-bucket"
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        file_name = f"tag-compliance-report-{current_time}.xlsx"
 
-            # Define S3 bucket and file name
-            bucket_name = "vb-auto-tag-check-and-compliance-report-bucket"
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-            file_name = f"untagged-resources-report-{current_time}.xlsx"
+        upload_excel_to_s3(excel_report, bucket_name, file_name)
+        print(f"✅ Excel report generated and uploaded successfully: {file_name}")
 
-            # Upload report to S3
-            upload_excel_to_s3(excel_report, bucket_name, file_name)
-
-            print(f"Excel report successfully uploaded: {file_name}")
-        else:
-            print("No untagged resources found.")
-    except Exception as error:
-        print(f"Error during Lambda execution: {error}")
+    except Exception as e:
+        print(f"❌ Error during Lambda execution: {e}")
