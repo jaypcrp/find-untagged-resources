@@ -6,28 +6,46 @@ from openpyxl import Workbook
 # Function to fetch ARNs of resources that are missing a specific tag key
 def fetch_resource_arns():
     try:
-        client = boto3.client('resource-explorer-2')
-
-        default_view_arn = "arn:aws:resource-explorer-2:ap-northeast-1:372296823591:view/all-resources/c02204f1-2b77-4363-a3fa-84b208cee97e"
+        # Only target these two regions
+        regions = ["ap-northeast-1", "ap-south-1"]
         query_filter = '-tag.key:vendor'
-
         resource_arns = []
-        paginator = client.get_paginator('search')
-        response_pages = paginator.paginate(
-            QueryString=query_filter,
-            ViewArn=default_view_arn
-        )
 
-        for response in response_pages:
-            resource_items = response['Resources']
-            for resource in resource_items:
-                resource_arns.append(resource['Arn'])
+        for region in regions:
+            print(f"🔍 Searching resources in region: {region}")
+            client = boto3.client('resource-explorer-2', region_name=region)
 
-        return list(set(resource_arns))
+            try:
+                # Get the available views in this region
+                view_response = client.list_views()
+                if not view_response.get('Views'):
+                    print(f"⚠️ No views found in region: {region}")
+                    continue
+
+                # Use the first (or default) view ARN
+                view_arn = view_response['Views'][0]['ViewArn']
+                print(f"Using ViewArn for {region}: {view_arn}")
+
+                # Paginate through search results (max 1000 per region)
+                paginator = client.get_paginator('search')
+                response_pages = paginator.paginate(
+                    QueryString=query_filter,
+                    ViewArn=view_arn
+                )
+
+                for response in response_pages:
+                    for resource in response.get('Resources', []):
+                        resource_arns.append(resource['Arn'])
+
+            except Exception as e:
+                print(f"❌ Error while fetching from region {region}: {e}")
+        # Deduplicate ARNs
+        unique_arns = list(set(resource_arns))
+        print(f"✅ Total untagged resources found: {len(unique_arns)}")
+        return unique_arns
     except Exception as error:
         print(f"Failed to retrieve resource ARNs: {error}")
         return []
-
 
 # Function to categorize resources by their region
 def categorize_resources_by_region(resource_arns):
