@@ -10,7 +10,7 @@ REQUIRED_TAGS = ["DeletionDate", "vendor", "owner", "purpose"]
 def fetch_resources_from_regions():
     try:
         regions = ["ap-northeast-1", "ap-south-1"]
-        query_filter = "tagKeys"
+        query_filter = "*"
         all_resources = []
 
         for region in regions:
