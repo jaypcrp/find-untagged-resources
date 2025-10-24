@@ -1,31 +1,33 @@
 import boto3
-import csv
 import io
 import datetime
+from openpyxl import Workbook
 
 # Function to fetch ARNs of resources that are missing a specific tag key
 def fetch_resource_arns():
     try:
         client = boto3.client('resource-explorer-2')
-        
+
         default_view_arn = "arn:aws:resource-explorer-2:ap-northeast-1:372296823591:view/all-resources/c02204f1-2b77-4363-a3fa-84b208cee97e"
         query_filter = '-tag.key:vendor'
-        
+
         resource_arns = []
         paginator = client.get_paginator('search')
         response_pages = paginator.paginate(
             QueryString=query_filter,
             ViewArn=default_view_arn
         )
-        
+
         for response in response_pages:
             resource_items = response['Resources']
             for resource in resource_items:
                 resource_arns.append(resource['Arn'])
-        
+
         return list(set(resource_arns))
     except Exception as error:
         print(f"Failed to retrieve resource ARNs: {error}")
+        return []
+
 
 # Function to categorize resources by their region
 def categorize_resources_by_region(resource_arns):
@@ -40,65 +42,76 @@ def categorize_resources_by_region(resource_arns):
         return regional_resources
     except Exception as error:
         print(f"Error while grouping resources by region: {error}")
+        return {}
 
-# Function to generate CSV report for untagged resources
-def generate_csv_report(untagged):
-    csv_buffer = io.StringIO()
-    csv_writer = csv.writer(csv_buffer)
-    
-    # Write header
-    csv_writer.writerow(["Resource ARN", "Status"])
-    
-    # Write untagged resources
-    for arn in untagged:
-        csv_writer.writerow([arn, "Untagged"])
-    
-    return csv_buffer.getvalue()
 
-# Function to upload CSV report to S3
-def upload_csv_to_s3(csv_data, bucket_name, file_name):
+# Function to generate Excel report with multiple region tabs
+def generate_excel_report(grouped_resources):
+    workbook = Workbook()
+    default_sheet = workbook.active
+    workbook.remove(default_sheet)  # remove default blank sheet
+
+    for region, arns in grouped_resources.items():
+        worksheet = workbook.create_sheet(title=region)
+        worksheet.append(["Resource ARN", "Status"])
+        for arn in arns:
+            worksheet.append([arn, "Untagged"])
+
+        # Auto-adjust column widths for neatness
+        for column_cells in worksheet.columns:
+            length = max(len(str(cell.value)) for cell in column_cells)
+            worksheet.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 80)
+
+    # Save workbook to an in-memory buffer
+    excel_buffer = io.BytesIO()
+    workbook.save(excel_buffer)
+    excel_buffer.seek(0)
+
+    return excel_buffer
+
+
+# Function to upload Excel file to S3
+def upload_excel_to_s3(excel_buffer, bucket_name, file_name):
     s3_client = boto3.client('s3')
     try:
-        # Upload CSV file to S3
         s3_client.put_object(
             Bucket=bucket_name,
             Key=file_name,
-            Body=csv_data,
-            ContentType='text/csv'
+            Body=excel_buffer.getvalue(),
+            ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
         print(f"Report uploaded to S3: {file_name}")
     except Exception as error:
         print(f"Failed to upload report to S3: {error}")
 
-# Main function for the AWS Lambda handler
+
+# Main function for AWS Lambda
 def lambda_handler(event, context):
     try:
         print("Execution started...")
-        
-        # Fetch the list of resources missing the specific tag
+
+        # Fetch untagged resources
         resources = fetch_resource_arns()
         if resources:
+            print(f"Total untagged resources found: {len(resources)}")
             print("Grouping resources by region...")
-            
-            # Group resources by region
+
+            # Group by region
             grouped_resources = categorize_resources_by_region(resources)
-            
-            # Flatten all grouped resource ARNs (since we’re not tagging)
-            all_untagged_resources = [arn for region_arns in grouped_resources.values() for arn in region_arns]
-            
-            # Generate the CSV report
-            csv_report = generate_csv_report(all_untagged_resources)
-            
-            # Define the S3 bucket and file name
+
+            # Generate Excel report with multiple sheets
+            excel_report = generate_excel_report(grouped_resources)
+
+            # Define S3 bucket and file name
             bucket_name = "vb-auto-tag-check-and-compliance-report-bucket"
             current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-            file_name = f"untagged-resources-report-{current_time}.csv"
-            
-            # Upload the report to S3
-            upload_csv_to_s3(csv_report, bucket_name, file_name)
-            
-            print(f"Number of untagged resources: {len(all_untagged_resources)}")
+            file_name = f"untagged-resources-report-{current_time}.xlsx"
+
+            # Upload report to S3
+            upload_excel_to_s3(excel_report, bucket_name, file_name)
+
+            print(f"Excel report successfully uploaded: {file_name}")
         else:
             print("No untagged resources found.")
     except Exception as error:
-        print(f"Error during lambda execution: {error}")
+        print(f"Error during Lambda execution: {error}")
